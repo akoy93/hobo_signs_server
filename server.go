@@ -83,7 +83,7 @@ func alive(res http.ResponseWriter, req *http.Request) {
 
 // Requires a username and a password
 func createAccount(res http.ResponseWriter, req *http.Request) {
-  fields := extractFields(res, req, "username", "password", "password_confirm")
+  fields := extractFields("POST", res, req, "username", "password", "password_confirm")
   if fields == nil {
     return
   }
@@ -136,7 +136,7 @@ func createAccount(res http.ResponseWriter, req *http.Request) {
 }
 
 func login(res http.ResponseWriter, req *http.Request) {
-  fields := extractFields(res, req, "username", "password")
+  fields := extractFields("POST", res, req, "username", "password")
   if fields == nil {
     return
   }
@@ -163,7 +163,7 @@ func login(res http.ResponseWriter, req *http.Request) {
 }
 
 func logout(res http.ResponseWriter, req *http.Request) {
-  fields := extractFields(res, req, "access_token")
+  fields := extractFields("POST", res, req, "access_token")
   if fields == nil {
     return
   }
@@ -181,7 +181,7 @@ func logout(res http.ResponseWriter, req *http.Request) {
 }
 
 func isLoggedIn(res http.ResponseWriter, req *http.Request) {
-  fields := extractFields(res, req, "access_token")
+  fields := extractFields("GET", res, req, "access_token")
   if fields == nil {
     return
   }
@@ -189,7 +189,17 @@ func isLoggedIn(res http.ResponseWriter, req *http.Request) {
   respond(res, true, validAccessToken(fields["access_token"]), nil)
 }
 
+// Requires multipart/form-data
 func uploadImage(res http.ResponseWriter, req *http.Request) {
+  access_token := req.FormValue("access_token")
+  if len(access_token) == 0 {
+    respond(res, false, nil, "Missing field(s). Requires access_token.")
+    return
+  }
+  if !enforceValidAccessToken(res, access_token) {
+    return
+  }
+
   file, header, file_err := req.FormFile("image")
   if LogErr(file_err) {
     respond(res, false, nil, "Did not receive file. Field name should be image.")
@@ -227,16 +237,14 @@ func serveImage(res http.ResponseWriter, req *http.Request) {
 
 // Latitude, Longitude, Caption, Image, Username
 func addPost(res http.ResponseWriter, req *http.Request) {
-  fields := extractFields(res, req, "latitude", "longitude", "access_token", "caption", "image_id")
+  fields := extractFields("POST", res, req, "latitude", "longitude", "access_token", "caption", "image_id")
   if fields == nil {
     return
   }
 
-  if !validAccessToken(fields["access_token"]) {
-    respond(res, false, nil, "Invalid access_token. You may need to login again.")
+  if !enforceValidAccessToken(res, fields["access_token"]) {
     return
   }
-
   username := users[fields["access_token"]]
 
   if !imageExists(fields["image_id"]) {
@@ -266,13 +274,12 @@ func addPost(res http.ResponseWriter, req *http.Request) {
 
 // requires radius to be in meters
 func getPosts(res http.ResponseWriter, req *http.Request) {
-  fields := extractFields(res, req, "latitude", "longitude", "radius", "access_token")
+  fields := extractFields("GET", res, req, "latitude", "longitude", "radius", "access_token")
   if fields == nil {
     return
   }
 
-  if !validAccessToken(fields["access_token"]) {
-    respond(res, false, nil, "Invalid access_token. You may need to login again.")
+  if !enforceValidAccessToken(res, fields["access_token"]) {
     return
   }
 
@@ -286,6 +293,33 @@ func getPosts(res http.ResponseWriter, req *http.Request) {
   }
   defer rows.Close()
 
+  respond(res, true, rowsToPosts(rows), nil)
+}
+
+func myPosts(res http.ResponseWriter, req *http.Request) {
+  fields := extractFields("GET", res, req, "access_token")
+  if fields == nil {
+    return
+  }
+
+  if !enforceValidAccessToken(res, fields["access_token"]) {
+    return
+  }
+
+  username := users[fields["access_token"]]
+  rows, db_err := db.Query("SELECT id, ST_X(ST_AsText(location)) as longitude, " +
+    "ST_Y(ST_AsText(location)) as latitude, caption, owner, image_id FROM posts " +
+    "WHERE owner=$1", username)
+  if LogErr(db_err) {
+    respond(res, false, nil, "Error retrieving rows from database.")
+    return
+  }
+  defer rows.Close()
+
+  respond(res, true, rowsToPosts(rows), nil)
+}
+
+func rowsToPosts(rows *sql.Rows) []map[string]string {
   var posts []map[string]string
   for rows.Next() {
     var id, longitude, latitude, caption, owner, image_id string
@@ -303,14 +337,14 @@ func getPosts(res http.ResponseWriter, req *http.Request) {
     posts = append(posts, post)
   }
 
-  respond(res, true, posts, nil)
+  return posts
 }
 
-func extractFields(res http.ResponseWriter, req *http.Request, fields ...string) map[string]string {
+func extractFields(method string, res http.ResponseWriter, req *http.Request, fields ...string) map[string]string {
   req.ParseForm()
   fieldMap := map[string]string{}
-  isPost := req.Method == "POST"
-  isGet := req.Method == "GET"
+  isPost := method == "POST"
+  isGet := method == "GET"
 
   for _, field := range fields {
     var retrievedField string
@@ -359,6 +393,14 @@ func validAccessToken(access_token string) bool {
   return tokenExists && userExists && token == access_token
 }
 
+func enforceValidAccessToken(res http.ResponseWriter, access_token string) bool {
+  if !validAccessToken(access_token) {
+    respond(res, false, nil, "Invalid access_token. You may need to login again.")
+    return false
+  }
+  return true
+}
+
 func imageExists(image_id string) bool {
   _, err := os.Stat(fmt.Sprintf("%s/%s.%s", IMAGE_DIRECTORY, image_id, IMAGE_EXTENSION))
   return !LogErr(err)
@@ -389,5 +431,6 @@ func main() {
   http.HandleFunc(fmt.Sprintf("/%s/", IMAGE_DIRECTORY), serveImage)
   http.HandleFunc("/add_post", addPost)
   http.HandleFunc("/get_posts", getPosts)
+  http.HandleFunc("/my_posts", myPosts)
   http.ListenAndServe(":9000", nil)
 }
