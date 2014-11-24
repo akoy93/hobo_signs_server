@@ -18,6 +18,7 @@ const (
   USERNAME_MAX_LENGTH int = 20
   PASSWORD_MAX_LENGTH int = 20
   ACCESS_TOKEN_LENGTH int = 32
+  CAPTION_MAX_LENGTH int = 256
   IMAGE_NAME_LENGTH int = 32
   IMAGE_DIRECTORY string = "images"
   IMAGE_EXTENSION string = "jpg"
@@ -26,7 +27,7 @@ const (
 
 // DB Schema:
 // - Users: | username | password_hash |
-// - Posts: | 
+// - Posts: | id | location | caption | owner | image_id |
 var db *sql.DB
 var DB_USER, DB_PASSWORD, DB_NAME string
 
@@ -273,7 +274,11 @@ func addPost(res http.ResponseWriter, req *http.Request) {
     return
   }
 
-  // TODO check caption length
+  if len(caption) > CAPTION_MAX_LENGTH {
+    respond(res, false, nil, 
+      fmt.Sprintf("Invalid caption. The maximum length is %s characters.", CAPTION_MAX_LENGTH))
+    return
+  }
 
   query_string := "INSERT INTO Posts (location, caption, owner, image_id) " +
     "VALUES (ST_GeographyFromText('SRID=4326;POINT(" + longitude + " " + 
@@ -286,6 +291,56 @@ func addPost(res http.ResponseWriter, req *http.Request) {
   }
 
   respond(res, true, nil, nil)
+}
+
+// requires radius to be in meters
+func getPosts(res http.ResponseWriter, req *http.Request) {
+  query := req.URL.Query()
+
+  latitude := query.Get("latitude")
+  longitude := query.Get("longitude")
+  radius := query.Get("radius")
+  access_token := query.Get("access_token")
+
+  if len(latitude) == 0 || len(longitude) == 0 || len(radius) == 0 || len(access_token) == 0 {
+    respond(res, false, nil, 
+      "Missing field(s). Requires latitude, longitude, radius, access_token.")
+    return
+  } 
+
+  if !validAccessToken(access_token) {
+    respond(res, false, nil, "Invalid access_token. You may need to login again.")
+    return
+  }
+
+  query_string := "SELECT id, ST_X(ST_AsText(location)) as longitude, ST_Y(ST_AsText(location))" +
+    " as latitude, caption, owner, image_id FROM posts WHERE ST_DWithin(location, 'POINT(" + 
+    longitude + " " + latitude + ")', " + radius + ");"
+  rows, db_err := db.Query(query_string)
+  if LogErr(db_err) {
+    respond(res, false, nil, "Error retrieving rows from database.")
+    return
+  }
+  defer rows.Close()
+
+  var posts []map[string]string
+  for rows.Next() {
+    var id, longitude, latitude, caption, owner, image_id string
+    rows.Scan(&id, &longitude, &latitude, &caption, &owner, &image_id)
+
+    post := map[string]string{
+      "id": id,
+      "longitude": longitude,
+      "latitude": latitude,
+      "caption": caption,
+      "owner": owner,
+      "image_id": image_id,
+    }
+
+    posts = append(posts, post)
+  }
+
+  respond(res, true, posts, nil)
 }
 
 func generateNewAccessToken(username string) string {
@@ -353,5 +408,6 @@ func main() {
   http.HandleFunc("/upload_image", uploadImage)
   http.HandleFunc(fmt.Sprintf("/%s/", IMAGE_DIRECTORY), serveImage)
   http.HandleFunc("/add_post", addPost)
+  http.HandleFunc("/get_posts", getPosts)
   http.ListenAndServe(":9000", nil)
 }
