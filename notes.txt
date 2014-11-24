@@ -1,0 +1,10 @@
+DB_USER = hobo_signs
+DB_PASSWORD = cmsc436
+DB_NAME = hobo_signs
+
+create table Users (
+  username char(20) unique,
+  password_hash char(256)
+);
+
+Use x-www-form-urlencoded
