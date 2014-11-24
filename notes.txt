@@ -2,9 +2,37 @@ DB_USER = hobo_signs
 DB_PASSWORD = cmsc436
 DB_NAME = hobo_signs
 
+-- Enable PostGIS (includes raster)
+CREATE EXTENSION postgis;
+-- Enable Topology
+CREATE EXTENSION postgis_topology;
+-- fuzzy matching needed for Tiger
+CREATE EXTENSION fuzzystrmatch;
+-- Enable US Tiger Geocoder
+CREATE EXTENSION postgis_tiger_geocoder;
+
 create table Users (
   username char(20) unique,
   password_hash char(256)
 );
+
+create table Posts (
+  id serial PRIMARY KEY,
+  location geography(POINT,4326),
+  caption char(256),
+  owner char(20),
+  image_id char(32)
+);
+
+(point format is longitude / latitude, distance is in meters)
+
+INSERT INTO Posts (location, caption, owner) VALUES (ST_GeographyFromText('SRID=4326;POINT(-110 30)'), 'Test caption', 'Test user' );
+INSERT INTO Posts (location, caption, owner) VALUES (ST_GeographyFromText('SRID=4326;POINT(-109 29)'), 'Test caption', 'Test user' );
+INSERT INTO Posts (location, caption, owner) VALUES (ST_GeographyFromText('SRID=4326;POINT(0 49)'), 'Test caption', 'Test user' );
+
+
+// find all rows within a certain radius:
+SELECT * FROM posts
+  WHERE ST_DWithin(location, 'POINT(-110 30)', 140456.0);
 
 Use x-www-form-urlencoded
