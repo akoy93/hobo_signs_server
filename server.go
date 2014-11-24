@@ -11,6 +11,7 @@ import (
   "log"
   "net/http"
   "os"
+  "strings"
   "sync"
 )
 
@@ -31,7 +32,7 @@ const (
 var db *sql.DB
 var DB_USER, DB_PASSWORD, DB_NAME string
 
-// To scale, we would use something like Redis for this
+// To scale and for persistence, we would use something like Redis for this
 var access_tokens map[string]string // username -> access_token
 var users map[string]string // access_token -> username
 var mutex *sync.Mutex
@@ -82,110 +83,95 @@ func alive(res http.ResponseWriter, req *http.Request) {
 
 // Requires a username and a password
 func createAccount(res http.ResponseWriter, req *http.Request) {
-  fields := []string{"username", "password", "password_confirm"}
-
-  if !fieldsExist(req, fields) {
-    respond(res, false, nil, 
-      "Missing field(s). Requires username, password, password_confirm.")
+  fields := extractFields(res, req, "username", "password", "password_confirm")
+  if fields == nil {
     return
-  } 
-
-  username := req.Form.Get("username")
-  password := req.Form.Get("password")
-  password_confirm := req.Form.Get("password_confirm")
+  }
 
   // check username length
-  if len(username) > USERNAME_MAX_LENGTH {
+  if len(fields["username"]) > USERNAME_MAX_LENGTH {
     respond(res, false, nil, "The maximum username length is 20 characters.")
     return
   }
 
   // check password length
-  if len(password) > PASSWORD_MAX_LENGTH {
+  if len(fields["password"]) > PASSWORD_MAX_LENGTH {
     respond(res, false, nil, "The maximum password length is 20 characters.")
     return
   }
 
   // verify that the supplied passwords match
-  if password != password_confirm {
+  if fields["password"] != fields["password_confirm"] {
     respond(res, false, nil, "The supplied passwords don't match.")
     return
   }
 
   // check if username already exists, otherwise, create the user
-  rows, err := db.Query("SELECT * FROM users WHERE username=$1", username)
+  rows, err := db.Query("SELECT * FROM users WHERE username=$1", fields["username"])
+  if LogErr(err) {
+    respond(res, false, nil, "Error accessing the database.")
+    return
+  }
   defer rows.Close()
-  LogErr(err)
+
   if rows.Next() {
     respond(res, false, nil, "The username already exists.")
   } else {
-    password_hash, bcrypt_err := bcrypt.GenerateFromPassword([]byte(password), 10)
-    LogErr(bcrypt_err)
+    password_hash, bcrypt_err := bcrypt.GenerateFromPassword([]byte(fields["password"]), 10)
+    if LogErr(bcrypt_err) {
+      respond(res, false, nil, "Bcrypt error.")
+      return
+    }
 
     _, db_err := db.Exec("INSERT INTO Users (username, password_hash) VALUES ($1, $2)", 
-      username, string(password_hash))
-    LogErr(db_err)
+      fields["username"], string(password_hash))
+    if LogErr(db_err) {
+      respond(res, false, nil, "Database insertion error.")
+      return
+    }
 
-    access_token := generateNewAccessToken(username)
-    
+    access_token := generateNewAccessToken(fields["username"])
     respond(res, true, access_token, nil)
   }
 }
 
 func login(res http.ResponseWriter, req *http.Request) {
-  fields := []string{"username", "password"}
-
-  if !fieldsExist(req, fields) {
-    respond(res, false, nil, 
-      "Missing field(s). Requires username, password, password_confirm.")
+  fields := extractFields(res, req, "username", "password")
+  if fields == nil {
     return
-  } 
-
-  username := req.Form.Get("username")
-  password := req.Form.Get("password")
+  }
 
   // Retrieve entry for the username
-  rows, db_err := db.Query(
-    "SELECT password_hash FROM Users WHERE username=$1", username)
-  defer rows.Close()
-  LogErr(db_err)
+  row := db.QueryRow("SELECT password_hash FROM Users WHERE username=$1", fields["username"])
 
-  // Check if username exists
-  if !rows.Next() {
+  // Check if username and password match
+  var password_hash string
+  if row_err := row.Scan(&password_hash); LogErr(row_err) {    
     respond(res, false, nil, "The supplied username does not exist.")
     return
   }
 
-  // Check if username and password match
-  // Usernames should be guaranteed to be unique, so we only look at one row
-  var password_hash string
-  row_err := rows.Scan(&password_hash)
-  LogErr(row_err)
-
   // compare the supplied password and the hashed password
-  bcrypt_err := bcrypt.CompareHashAndPassword([]byte(password_hash), []byte(password))
+  bcrypt_err := bcrypt.CompareHashAndPassword([]byte(password_hash), []byte(fields["password"]))
   if bcrypt_err != nil {
     respond(res, false, nil, "Incorrect password.")
     return
   }
 
-  access_token := generateNewAccessToken(username)
+  access_token := generateNewAccessToken(fields["username"])
   respond(res, true, access_token, nil)
 }
 
 func logout(res http.ResponseWriter, req *http.Request) {
-  fields := []string{"access_token"}
-
-  if !fieldsExist(req, fields) {
-    respond(res, false, nil, "Missing field(s). Requires access_token.")
+  fields := extractFields(res, req, "access_token")
+  if fields == nil {
     return
   }
 
-  access_token := req.Form.Get("access_token")
-  username, ok := users[access_token]
+  username, ok := users[fields["access_token"]]
   if ok {
     mutex.Lock()
-    delete(users, access_token)
+    delete(users, fields["access_token"])
     delete(access_tokens, username)
     mutex.Unlock()
     respond(res, true, nil, nil)
@@ -195,19 +181,12 @@ func logout(res http.ResponseWriter, req *http.Request) {
 }
 
 func isLoggedIn(res http.ResponseWriter, req *http.Request) {
-  query := req.URL.Query()
-  access_token := query.Get("access_token")
-
-  if len(access_token) == 0 {
-    respond(res, false, nil, "Missing field(s). Requires access_token.")
+  fields := extractFields(res, req, "access_token")
+  if fields == nil {
     return
   }
 
-  if validAccessToken(access_token) {
-    respond(res, true, true, nil)
-  } else {
-    respond(res, true, false, nil)
-  }
+  respond(res, true, validAccessToken(fields["access_token"]), nil)
 }
 
 func uploadImage(res http.ResponseWriter, req *http.Request) {
@@ -248,41 +227,33 @@ func serveImage(res http.ResponseWriter, req *http.Request) {
 
 // Latitude, Longitude, Caption, Image, Username
 func addPost(res http.ResponseWriter, req *http.Request) {
-  fields := []string{"latitude", "longitude", "access_token", "caption", "image_id"}
-
-  if !fieldsExist(req, fields) {
-    respond(res, false, nil, 
-      "Missing field(s). Requires latitude, longitude, access_token, caption, image_id.")
+  fields := extractFields(res, req, "latitude", "longitude", "access_token", "caption", "image_id")
+  if fields == nil {
     return
-  } 
+  }
 
-  latitude := req.Form.Get("latitude")
-  longitude := req.Form.Get("longitude")
-  access_token := req.Form.Get("access_token")
-  caption := req.Form.Get("caption")
-  image_id := req.Form.Get("image_id")
-
-  if !validAccessToken(access_token) {
+  if !validAccessToken(fields["access_token"]) {
     respond(res, false, nil, "Invalid access_token. You may need to login again.")
     return
   }
 
-  username := users[access_token]
+  username := users[fields["access_token"]]
 
-  if !imageExists(image_id) {
+  if !imageExists(fields["image_id"]) {
     respond(res, false, nil, "Invalid image_id. The specified image does not exist.")
     return
   }
 
-  if len(caption) > CAPTION_MAX_LENGTH {
+  if len(fields["caption"]) > CAPTION_MAX_LENGTH {
     respond(res, false, nil, 
       fmt.Sprintf("Invalid caption. The maximum length is %s characters.", CAPTION_MAX_LENGTH))
     return
   }
 
   query_string := "INSERT INTO Posts (location, caption, owner, image_id) " +
-    "VALUES (ST_GeographyFromText('SRID=4326;POINT(" + longitude + " " + 
-    latitude + fmt.Sprintf(")'), '%s', '%s', '%s')", caption, username, image_id)
+    "VALUES (ST_GeographyFromText('SRID=4326;POINT(" + fields["longitude"] + " " + 
+    fields["latitude"] + fmt.Sprintf(")'), '%s', '%s', '%s')", 
+    fields["caption"], username, fields["image_id"])
   _, db_err := db.Exec(query_string)
 
   if LogErr(db_err) {
@@ -295,27 +266,19 @@ func addPost(res http.ResponseWriter, req *http.Request) {
 
 // requires radius to be in meters
 func getPosts(res http.ResponseWriter, req *http.Request) {
-  query := req.URL.Query()
-
-  latitude := query.Get("latitude")
-  longitude := query.Get("longitude")
-  radius := query.Get("radius")
-  access_token := query.Get("access_token")
-
-  if len(latitude) == 0 || len(longitude) == 0 || len(radius) == 0 || len(access_token) == 0 {
-    respond(res, false, nil, 
-      "Missing field(s). Requires latitude, longitude, radius, access_token.")
+  fields := extractFields(res, req, "latitude", "longitude", "radius", "access_token")
+  if fields == nil {
     return
-  } 
+  }
 
-  if !validAccessToken(access_token) {
+  if !validAccessToken(fields["access_token"]) {
     respond(res, false, nil, "Invalid access_token. You may need to login again.")
     return
   }
 
   query_string := "SELECT id, ST_X(ST_AsText(location)) as longitude, ST_Y(ST_AsText(location))" +
     " as latitude, caption, owner, image_id FROM posts WHERE ST_DWithin(location, 'POINT(" + 
-    longitude + " " + latitude + ")', " + radius + ");"
+    fields["longitude"] + " " + fields["latitude"] + ")', " + fields["radius"] + ");"
   rows, db_err := db.Query(query_string)
   if LogErr(db_err) {
     respond(res, false, nil, "Error retrieving rows from database.")
@@ -343,6 +306,34 @@ func getPosts(res http.ResponseWriter, req *http.Request) {
   respond(res, true, posts, nil)
 }
 
+func extractFields(res http.ResponseWriter, req *http.Request, fields ...string) map[string]string {
+  req.ParseForm()
+  fieldMap := map[string]string{}
+  isPost := req.Method == "POST"
+  isGet := req.Method == "GET"
+
+  for _, field := range fields {
+    var retrievedField string
+    if isPost {  
+      retrievedField = req.Form.Get(field)
+    } else if isGet {
+      retrievedField = req.URL.Query().Get(field)
+    } else {
+      respond(res, false, nil, "Invalid HTTP request type. Only permits POST and GET.")
+      return nil
+    }
+
+    if len(retrievedField) == 0 {
+      respond(res, false, nil, 
+        fmt.Sprintf("Missings field(s). Requires %s.", strings.Join(fields, ", ")))
+      return nil
+    }
+    fieldMap[field] = retrievedField
+  }
+
+  return fieldMap
+}
+
 func generateNewAccessToken(username string) string {
   access_token := uniuri.NewLen(ACCESS_TOKEN_LENGTH)
 
@@ -354,21 +345,10 @@ func generateNewAccessToken(username string) string {
   return access_token
 }
 
-func fieldsExist(req *http.Request, fields []string) bool {
-  req.ParseForm()
-
-  for _, field := range fields {
-    if len(req.Form.Get(field)) == 0 {
-      return false
-    }
-  }
-
-  return true
-}
-
 func validAccessToken(access_token string) bool {
   var token string
   var userExists bool
+
   mutex.Lock()
   user, tokenExists := users[access_token]
   if tokenExists {
