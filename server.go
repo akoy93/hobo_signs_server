@@ -1,13 +1,20 @@
+// Requires DB_USER, DB_PASSWORD, DB_NAME, AWS_ACCESS_KEY_ID, and 
+// AWS_SECRET_ACCESS_KEY, and BUCKET_NAME environment variables.
+
 package main
 
 import (
+  "bytes"
   "encoding/json"
   "database/sql"
   "fmt"
   "github.com/dchest/uniuri"
   _ "github.com/lib/pq"
+  "github.com/mitchellh/goamz/aws"
+  "github.com/mitchellh/goamz/s3"
+  "github.com/nfnt/resize"
   "golang.org/x/crypto/bcrypt"
-  "io"
+  "image/jpeg"
   "log"
   "net/http"
   "os"
@@ -21,7 +28,8 @@ const (
   ACCESS_TOKEN_LENGTH int = 32
   CAPTION_MAX_LENGTH int = 256
   IMAGE_NAME_LENGTH int = 32
-  IMAGE_DIRECTORY string = "images"
+  MAX_IMAGE_HEIGHT uint = 1080
+  MAX_IMAGE_WIDTH uint = 1080
   IMAGE_EXTENSION string = "jpg"
   IMAGE_CONTENT_TYPE string = "image/jpeg"
 )
@@ -29,8 +37,9 @@ const (
 // DB Schema:
 // - Users: | username | password_hash |
 // - Posts: | id | location | caption | owner | image_id |
+var bucket *s3.Bucket
 var db *sql.DB
-var DB_USER, DB_PASSWORD, DB_NAME string
+var DB_USER, DB_PASSWORD, DB_NAME, BUCKET_NAME string
 
 // To scale and for persistence, we would use something like Redis for this
 var access_tokens map[string]string // username -> access_token
@@ -53,6 +62,11 @@ func init() {
     log.Fatal("$DB_NAME not set")
   }
 
+  BUCKET_NAME = os.Getenv("BUCKET_NAME")
+  if BUCKET_NAME == "" {
+    log.Fatal("$BUCKET_NAME not set")
+  }
+
   access_tokens = make(map[string]string)
   users = make(map[string]string)
   mutex = new(sync.Mutex)
@@ -64,6 +78,23 @@ func setupDB() *sql.DB {
     DB_NAME, DB_USER, DB_PASSWORD))
   LogErr(err)
   return db
+}
+
+func setupS3() {
+  auth, err := aws.EnvAuth()
+  if err != nil {
+    log.Fatal(err)
+  }
+  client := s3.New(auth, aws.USEast)
+  bucket = client.Bucket(BUCKET_NAME)
+}
+
+func addS3Image(name string, data []byte) error {
+  return bucket.Put(name, data, IMAGE_CONTENT_TYPE, s3.BucketOwnerFull)
+}
+
+func getS3Image(name string) string {
+  return bucket.URL(name)
 }
 
 func LogErr(err error) bool {
@@ -213,26 +244,28 @@ func uploadImage(res http.ResponseWriter, req *http.Request) {
     return
   }
 
+  img, decode_err := jpeg.Decode(file)
+  if LogErr(decode_err) {
+    respond(res, false, nil, "Unable to decode image.")
+    return
+  }
+
+  resized := resize.Thumbnail(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT, img, resize.NearestNeighbor)
+
+  buf := new(bytes.Buffer)
+  encode_err := jpeg.Encode(buf, resized, nil)
+  if LogErr(encode_err) {
+    respond(res, false, nil, "Unable to encode image.")
+    return
+  }
+
   image_name := uniuri.NewLen(IMAGE_NAME_LENGTH)
-  out, os_err := os.Create(
-    fmt.Sprintf("%s/%s.%s", IMAGE_DIRECTORY, image_name, IMAGE_EXTENSION))
-  if LogErr(os_err) {
+  if LogErr(addS3Image(image_name, buf.Bytes())) {
     respond(res, false, nil, "Unable to store image.")
     return
   }
-  defer out.Close()
 
-  _, copy_err := io.Copy(out, file)
-  if LogErr(copy_err) {
-    respond(res, false, nil, "Unable to copy image.")
-    return
-  }
-
-  respond(res, true, image_name, nil)
-}
-
-func serveImage(res http.ResponseWriter, req *http.Request) {
-  http.ServeFile(res, req, fmt.Sprintf("%s.%s", req.URL.Path[1:], IMAGE_EXTENSION))
+  respond(res, true, getS3Image(image_name), nil)
 }
 
 // Latitude, Longitude, Caption, Image, Username
@@ -246,11 +279,6 @@ func addPost(res http.ResponseWriter, req *http.Request) {
     return
   }
   username := users[fields["access_token"]]
-
-  if !imageExists(fields["image_id"]) {
-    respond(res, false, nil, "Invalid image_id. The specified image does not exist.")
-    return
-  }
 
   if len(fields["caption"]) > CAPTION_MAX_LENGTH {
     respond(res, false, nil, 
@@ -401,11 +429,6 @@ func enforceValidAccessToken(res http.ResponseWriter, access_token string) bool 
   return true
 }
 
-func imageExists(image_id string) bool {
-  _, err := os.Stat(fmt.Sprintf("%s/%s.%s", IMAGE_DIRECTORY, image_id, IMAGE_EXTENSION))
-  return !LogErr(err)
-}
-
 func respond(body http.ResponseWriter, succ bool, res interface{}, err interface{}) {
   resMap := map[string]interface{}{
     "success": succ,
@@ -421,6 +444,7 @@ func respond(body http.ResponseWriter, succ bool, res interface{}, err interface
 func main() {
   db = setupDB()
   defer db.Close()
+  setupS3()
   http.HandleFunc("/", hello)
   http.HandleFunc("/ping", alive)
   http.HandleFunc("/create_account", createAccount)
@@ -428,7 +452,6 @@ func main() {
   http.HandleFunc("/logout", logout)
   http.HandleFunc("/is_logged_in", isLoggedIn)
   http.HandleFunc("/upload_image", uploadImage)
-  http.HandleFunc(fmt.Sprintf("/%s/", IMAGE_DIRECTORY), serveImage)
   http.HandleFunc("/add_post", addPost)
   http.HandleFunc("/get_posts", getPosts)
   http.HandleFunc("/my_posts", myPosts)
