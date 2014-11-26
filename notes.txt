@@ -21,7 +21,7 @@ create table Posts (
   location geography(POINT,4326),
   caption char(256),
   owner char(20),
-  image_id char(32)
+  image_url char(128)
 );
 
 (point format is longitude / latitude, distance is in meters)

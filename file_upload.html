@@ -1,0 +1,18 @@
+<html>
+<title>Go upload</title>
+<body>
+  <form action="http://127.0.0.1:9000/add_post" method="post" enctype="multipart/form-data">
+    <label for="file">Filename:</label>
+    <input type="file" name="image" id="file"> <br>
+    <label for="access_token">Access token:</label>
+    <input type="text" name="access_token" id="access_token"> <br>
+    <label for="latitude">Latitude:</label>
+    <input type="text" name="latitude" id="latitude"> <br>
+    <label for="longitude">Longitude:</label>
+    <input type="text" name="longitude" id="longitude"> <br>
+    <label for="caption">Caption:</label>
+    <input type="text" name="caption" id="caption"> <br> <br>
+    <input type="submit" name="submit" value="Submit">
+  </form>
+</body>
+</html>

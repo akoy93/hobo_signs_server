@@ -15,6 +15,7 @@ import (
   "github.com/nfnt/resize"
   "golang.org/x/crypto/bcrypt"
   "image/jpeg"
+  "io"
   "log"
   "net/http"
   "os"
@@ -36,7 +37,7 @@ const (
 
 // DB Schema:
 // - Users: | username | password_hash |
-// - Posts: | id | location | caption | owner | image_id |
+// - Posts: | id | location | caption | owner | image_url |
 var bucket *s3.Bucket
 var db *sql.DB
 var DB_USER, DB_PASSWORD, DB_NAME, BUCKET_NAME string
@@ -70,6 +71,14 @@ func init() {
   access_tokens = make(map[string]string)
   users = make(map[string]string)
   mutex = new(sync.Mutex)
+
+  // Setup Amazon S3 connection
+  auth, err := aws.EnvAuth()
+  if err != nil {
+    log.Fatal(err)
+  }
+  client := s3.New(auth, aws.USEast)
+  bucket = client.Bucket(BUCKET_NAME)
 }
 
 func setupDB() *sql.DB {
@@ -78,15 +87,6 @@ func setupDB() *sql.DB {
     DB_NAME, DB_USER, DB_PASSWORD))
   LogErr(err)
   return db
-}
-
-func setupS3() {
-  auth, err := aws.EnvAuth()
-  if err != nil {
-    log.Fatal(err)
-  }
-  client := s3.New(auth, aws.USEast)
-  bucket = client.Bucket(BUCKET_NAME)
 }
 
 func addS3Image(name string, data []byte) error {
@@ -221,13 +221,19 @@ func isLoggedIn(res http.ResponseWriter, req *http.Request) {
 }
 
 // Requires multipart/form-data
-func uploadImage(res http.ResponseWriter, req *http.Request) {
-  access_token := req.FormValue("access_token")
-  if len(access_token) == 0 {
-    respond(res, false, nil, "Missing field(s). Requires access_token.")
+func addPost(res http.ResponseWriter, req *http.Request) {
+  fields := extractFields("POST", res, req, "latitude", "longitude", "access_token", "caption")
+  if fields == nil {
     return
   }
-  if !enforceValidAccessToken(res, access_token) {
+
+  if !enforceValidAccessToken(res, fields["access_token"]) {
+    return
+  }
+
+  if len(fields["caption"]) > CAPTION_MAX_LENGTH {
+    respond(res, false, nil, 
+      fmt.Sprintf("Invalid caption. The maximum length is %s characters.", CAPTION_MAX_LENGTH))
     return
   }
 
@@ -244,52 +250,22 @@ func uploadImage(res http.ResponseWriter, req *http.Request) {
     return
   }
 
-  img, decode_err := jpeg.Decode(file)
-  if LogErr(decode_err) {
-    respond(res, false, nil, "Unable to decode image.")
-    return
-  }
-
-  resized := resize.Thumbnail(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT, img, resize.NearestNeighbor)
-
-  buf := new(bytes.Buffer)
-  encode_err := jpeg.Encode(buf, resized, nil)
-  if LogErr(encode_err) {
-    respond(res, false, nil, "Unable to encode image.")
+  bytes := processImage(res, file)
+  if bytes == nil {
     return
   }
 
   image_name := uniuri.NewLen(IMAGE_NAME_LENGTH)
-  if LogErr(addS3Image(image_name, buf.Bytes())) {
+  if LogErr(addS3Image(image_name, bytes)) {
     respond(res, false, nil, "Unable to store image.")
     return
   }
 
-  respond(res, true, getS3Image(image_name), nil)
-}
-
-// Latitude, Longitude, Caption, Image, Username
-func addPost(res http.ResponseWriter, req *http.Request) {
-  fields := extractFields("POST", res, req, "latitude", "longitude", "access_token", "caption", "image_id")
-  if fields == nil {
-    return
-  }
-
-  if !enforceValidAccessToken(res, fields["access_token"]) {
-    return
-  }
   username := users[fields["access_token"]]
-
-  if len(fields["caption"]) > CAPTION_MAX_LENGTH {
-    respond(res, false, nil, 
-      fmt.Sprintf("Invalid caption. The maximum length is %s characters.", CAPTION_MAX_LENGTH))
-    return
-  }
-
-  query_string := "INSERT INTO Posts (location, caption, owner, image_id) " +
+  query_string := "INSERT INTO Posts (location, caption, owner, image_url) " +
     "VALUES (ST_GeographyFromText('SRID=4326;POINT(" + fields["longitude"] + " " + 
     fields["latitude"] + fmt.Sprintf(")'), '%s', '%s', '%s')", 
-    fields["caption"], username, fields["image_id"])
+    fields["caption"], username, getS3Image(image_name))
   _, db_err := db.Exec(query_string)
 
   if LogErr(db_err) {
@@ -298,6 +274,25 @@ func addPost(res http.ResponseWriter, req *http.Request) {
   }
 
   respond(res, true, nil, nil)
+}
+
+func processImage(res http.ResponseWriter, file io.Reader) []byte {
+  img, decode_err := jpeg.Decode(file)
+  if LogErr(decode_err) {
+    respond(res, false, nil, "Unable to decode image.")
+    return nil
+  }
+
+  resized := resize.Thumbnail(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT, img, resize.NearestNeighbor)
+
+  buf := new(bytes.Buffer)
+  encode_err := jpeg.Encode(buf, resized, nil)
+  if LogErr(encode_err) {
+    respond(res, false, nil, "Unable to encode image.")
+    return nil
+  }
+
+  return buf.Bytes()
 }
 
 // requires radius to be in meters
@@ -312,7 +307,7 @@ func getPosts(res http.ResponseWriter, req *http.Request) {
   }
 
   query_string := "SELECT id, ST_X(ST_AsText(location)) as longitude, ST_Y(ST_AsText(location))" +
-    " as latitude, caption, owner, image_id FROM posts WHERE ST_DWithin(location, 'POINT(" + 
+    " as latitude, caption, owner, image_url FROM posts WHERE ST_DWithin(location, 'POINT(" + 
     fields["longitude"] + " " + fields["latitude"] + ")', " + fields["radius"] + ");"
   rows, db_err := db.Query(query_string)
   if LogErr(db_err) {
@@ -336,7 +331,7 @@ func myPosts(res http.ResponseWriter, req *http.Request) {
 
   username := users[fields["access_token"]]
   rows, db_err := db.Query("SELECT id, ST_X(ST_AsText(location)) as longitude, " +
-    "ST_Y(ST_AsText(location)) as latitude, caption, owner, image_id FROM posts " +
+    "ST_Y(ST_AsText(location)) as latitude, caption, owner, image_url FROM posts " +
     "WHERE owner=$1", username)
   if LogErr(db_err) {
     respond(res, false, nil, "Error retrieving rows from database.")
@@ -350,8 +345,8 @@ func myPosts(res http.ResponseWriter, req *http.Request) {
 func rowsToPosts(rows *sql.Rows) []map[string]string {
   var posts []map[string]string
   for rows.Next() {
-    var id, longitude, latitude, caption, owner, image_id string
-    rows.Scan(&id, &longitude, &latitude, &caption, &owner, &image_id)
+    var id, longitude, latitude, caption, owner, image_url string
+    rows.Scan(&id, &longitude, &latitude, &caption, &owner, &image_url)
 
     post := map[string]string{
       "id": id,
@@ -359,7 +354,7 @@ func rowsToPosts(rows *sql.Rows) []map[string]string {
       "latitude": latitude,
       "caption": caption,
       "owner": owner,
-      "image_id": image_id,
+      "image_url": image_url,
     }
 
     posts = append(posts, post)
@@ -369,7 +364,6 @@ func rowsToPosts(rows *sql.Rows) []map[string]string {
 }
 
 func extractFields(method string, res http.ResponseWriter, req *http.Request, fields ...string) map[string]string {
-  req.ParseForm()
   fieldMap := map[string]string{}
   isPost := method == "POST"
   isGet := method == "GET"
@@ -377,7 +371,7 @@ func extractFields(method string, res http.ResponseWriter, req *http.Request, fi
   for _, field := range fields {
     var retrievedField string
     if isPost {  
-      retrievedField = req.Form.Get(field)
+      retrievedField = req.FormValue(field)
     } else if isGet {
       retrievedField = req.URL.Query().Get(field)
     } else {
@@ -444,14 +438,12 @@ func respond(body http.ResponseWriter, succ bool, res interface{}, err interface
 func main() {
   db = setupDB()
   defer db.Close()
-  setupS3()
   http.HandleFunc("/", hello)
   http.HandleFunc("/ping", alive)
   http.HandleFunc("/create_account", createAccount)
   http.HandleFunc("/login", login)
   http.HandleFunc("/logout", logout)
   http.HandleFunc("/is_logged_in", isLoggedIn)
-  http.HandleFunc("/upload_image", uploadImage)
   http.HandleFunc("/add_post", addPost)
   http.HandleFunc("/get_posts", getPosts)
   http.HandleFunc("/my_posts", myPosts)
