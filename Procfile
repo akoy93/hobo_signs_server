@@ -1,1 +1,1 @@
-web: server -port=$PORT
+web: hobo_signs_server
