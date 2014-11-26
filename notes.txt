@@ -1,3 +1,5 @@
+DIGITAL OCEAN - DB_USER=postgres
+
 DB_USER = hobo_signs
 DB_PASSWORD = cmsc436
 DB_NAME = hobo_signs

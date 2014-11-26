@@ -7,7 +7,6 @@ import (
   "bytes"
   "encoding/json"
   "database/sql"
-  "flag"
   "fmt"
   "github.com/dchest/uniuri"
   _ "github.com/lib/pq"
@@ -41,8 +40,7 @@ const (
 // - Posts: | id | location | caption | owner | image_url |
 var bucket *s3.Bucket
 var db *sql.DB
-var DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, BUCKET_NAME string
-var port *string
+var DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, BUCKET_NAME, PORT string
 
 // To scale and for persistence, we would use something like Redis for this
 var access_tokens map[string]string // username -> access_token
@@ -75,9 +73,10 @@ func init() {
     log.Fatal("$BUCKET_NAME not set")
   }
 
-  // 
-  port = flag.String("port", "8080", "HTTP Port")
-  flag.Parse()
+  PORT = os.Getenv("PORT")
+  if PORT == "" {
+    log.Fatal("$PORT not set")
+  }
 
   access_tokens = make(map[string]string)
   users = make(map[string]string)
@@ -450,7 +449,7 @@ func main() {
   db = setupDB()
   defer db.Close()
 
-  log.Println("Starting server on port", *port)
+  log.Println("Starting server on port", PORT)
 
   http.HandleFunc("/", hello)
   http.HandleFunc("/ping", alive)
@@ -461,5 +460,5 @@ func main() {
   http.HandleFunc("/add_post", addPost)
   http.HandleFunc("/get_posts", getPosts)
   http.HandleFunc("/my_posts", myPosts)
-  log.Fatal(http.ListenAndServe(":" + *port, nil))
+  log.Fatal(http.ListenAndServe(":" + PORT, nil))
 }
