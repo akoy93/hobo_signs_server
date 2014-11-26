@@ -1,4 +1,4 @@
-// Requires DB_USER, DB_PASSWORD, DB_NAME, AWS_ACCESS_KEY_ID, and 
+// Requires DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, AWS_ACCESS_KEY_ID, and 
 // AWS_SECRET_ACCESS_KEY, and BUCKET_NAME environment variables.
 
 package main
@@ -41,7 +41,7 @@ const (
 // - Posts: | id | location | caption | owner | image_url |
 var bucket *s3.Bucket
 var db *sql.DB
-var DB_USER, DB_PASSWORD, DB_NAME, BUCKET_NAME string
+var DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, BUCKET_NAME string
 var port *string
 
 // To scale and for persistence, we would use something like Redis for this
@@ -63,6 +63,11 @@ func init() {
   DB_NAME = os.Getenv("DB_NAME")
   if DB_NAME == "" {
     log.Fatal("$DB_NAME not set")
+  }
+
+  DB_HOST = os.Getenv("DB_HOST")
+  if DB_HOST == "" {
+    log.Fatal("$DB_HOST not set")
   }
 
   BUCKET_NAME = os.Getenv("BUCKET_NAME")
@@ -89,8 +94,8 @@ func init() {
 
 func setupDB() *sql.DB {
   db, err := sql.Open("postgres", fmt.Sprintf(
-    "dbname=%s user=%s password=%s sslmode=disable", 
-    DB_NAME, DB_USER, DB_PASSWORD))
+    "host=%s dbname=%s user=%s password=%s sslmode=disable", 
+    DB_HOST, DB_NAME, DB_USER, DB_PASSWORD))
   LogErr(err)
   return db
 }
