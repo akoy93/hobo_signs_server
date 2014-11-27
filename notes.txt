@@ -1,5 +1,4 @@
-DIGITAL OCEAN - DB_USER=postgres
-
+DB_URL = postgres://hobo_signs:cmsc436@localhost:5432/hobo_signs?sslmode=disable
 DB_USER = hobo_signs
 DB_PASSWORD = cmsc436
 DB_NAME = hobo_signs
