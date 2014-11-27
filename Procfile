@@ -1,1 +1,1 @@
-web: hobo_signs_server
+web: server.go
