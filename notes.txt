@@ -1,3 +1,22 @@
+-------------------------------------------------------
+TO GET POSTGIS ON DOKKU:
+https://github.com/Kloadut/dokku-pg-plugin/issues/33
+
+docker run -t -i kloadut/postgresql /bin/bash
+apt-get update
+sudo apt-get install postgresql-9.3-postgis-2.1
+
+While bash is still running on the Docker container,
+commit the docker container as the same name:
+
+docker ps (grab image id)
+docker commit (image id) kloadut/postgresql
+
+Then do dokku postgresql:create as you would normally.
+-------------------------------------------------------
+
+104.236.2.144
+
 DB_URL = postgres://hobo_signs:cmsc436@localhost:5432/hobo_signs?sslmode=disable
 DB_USER = hobo_signs
 DB_PASSWORD = cmsc436
