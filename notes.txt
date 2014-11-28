@@ -10,9 +10,22 @@ While bash is still running on the Docker container,
 commit the docker container as the same name:
 
 docker ps (grab image id)
-docker commit (image id) kloadut/postgresql
+docker commit <image id> kloadut/postgresql
 
 Then do dokku postgresql:create as you would normally.
+-------------------------------------------------------
+TO SET DOKKU ENVIRONMENT VARAIBLES:
+
+dokku config:set <app_name> KEY1=VALUE1
+-------------------------------------------------------
+TO RESTART A DOKKU WEB APP:
+
+dokku release <app_name>
+dokku deploy <app_name>
+-------------------------------------------------------
+USEFUL DOKKU COMMANDS:
+
+dokku logs <app_name>
 -------------------------------------------------------
 
 104.236.2.144
@@ -32,7 +45,7 @@ CREATE EXTENSION fuzzystrmatch;
 CREATE EXTENSION postgis_tiger_geocoder;
 
 create table Users (
-  username char(20) unique,
+  username char(20) unique PRIMARY KEY,
   password_hash char(256)
 );
 
@@ -41,12 +54,30 @@ create table Posts (
   location geography(POINT,4326),
   caption char(256),
   owner char(20),
-  image_url char(128)
+  image_url char(128),
+  hashtags text,
+  created_at timestamp
 );
+
+-- Should create index on hashtag
+create table Hashtags (
+  hashtag text,
+  post_id int
+);
+CREATE INDEX hashtag_idx ON Hashtags(hashtag);
+
+-- Should create index on post_id
+create table Votes (
+  post_id int,
+  username char(20),
+  vote smallint,
+  PRIMARY KEY(post_id, username)
+);
+CREATE INDEX vote_idx ON Votes(post_id);
 
 (point format is longitude / latitude, distance is in meters)
 
-INSERT INTO Posts (location, caption, owner) VALUES (ST_GeographyFromText('SRID=4326;POINT(-110 30)'), 'Test caption', 'Test user' );
+INSERT INTO Posts (location, caption, owner, image_url, hashtags, created_at) VALUES (ST_GeographyFromText('SRID=4326;POINT(-110 30)'), 'Test caption', 'Test user', 'test url', 'hashtag1|hashtag2', CURRENT_TIMESTAMP ) RETURNING id;
 INSERT INTO Posts (location, caption, owner) VALUES (ST_GeographyFromText('SRID=4326;POINT(-109 29)'), 'Test caption', 'Test user' );
 INSERT INTO Posts (location, caption, owner) VALUES (ST_GeographyFromText('SRID=4326;POINT(0 49)'), 'Test caption', 'Test user' );
 

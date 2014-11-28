@@ -1,5 +1,5 @@
 // Requires DB_URL, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, 
-// and BUCKET_NAME environment variables.
+// PORT, and BUCKET_NAME environment variables.
 
 package main
 
@@ -21,6 +21,7 @@ import (
   "os"
   "strings"
   "sync"
+  "time"
 )
 
 const (
@@ -37,7 +38,8 @@ const (
 
 // DB Schema:
 // - Users: | username | password_hash |
-// - Posts: | id | location | caption | owner | image_url |
+// - Posts: | id | location | caption | owner | image_url | hashtags | created_at |
+// - Hashtags: | hashtag | post_id |
 var bucket *s3.Bucket
 var db *sql.DB
 var DB_URL, BUCKET_NAME, PORT string
@@ -214,11 +216,14 @@ func isLoggedIn(res http.ResponseWriter, req *http.Request) {
 }
 
 // Requires multipart/form-data
+// Optional "hashtags" parameter in the form of #HASTAG1|#HASHTAG2|#HASHTAG3
 func addPost(res http.ResponseWriter, req *http.Request) {
   fields := extractFields("POST", res, req, "latitude", "longitude", "access_token", "caption")
   if fields == nil {
     return
   }
+  hashtags_raw := strings.ToLower(req.FormValue("hashtags"))
+  hashtags := strings.Split(hashtags_raw, "|")
 
   if !enforceValidAccessToken(res, fields["access_token"]) {
     return
@@ -254,16 +259,30 @@ func addPost(res http.ResponseWriter, req *http.Request) {
     return
   }
 
+  // Add to Posts table
   username := users[fields["access_token"]]
-  query_string := "INSERT INTO Posts (location, caption, owner, image_url) " +
-    "VALUES (ST_GeographyFromText('SRID=4326;POINT(" + fields["longitude"] + " " + 
-    fields["latitude"] + fmt.Sprintf(")'), '%s', '%s', '%s')", 
-    fields["caption"], username, getS3Image(image_name))
-  _, db_err := db.Exec(query_string)
+  point_str := pointString(fields["latitude"], fields["longitude"])
+  query_string := "INSERT INTO Posts (location, caption, owner, image_url, hashtags, created_at) " +
+    "VALUES (" + point_str + fmt.Sprintf(", '%s', '%s', '%s', '%s', CURRENT_TIMESTAMP) RETURNING id", 
+    fields["caption"], username, getS3Image(image_name), hashtags_raw)
+  rows, db_err := db.Query(query_string)
 
   if LogErr(db_err) {
     respond(res, false, nil, "Error adding post to database.")
     return
+  }
+
+  // Add to hashtags table
+  var post_id string
+  if rows.Next() {
+    rows.Scan(&post_id)
+  }
+  for _, hashtag := range hashtags {
+    _, db_err := db.Exec("INSERT INTO Hashtags (hashtag, post_id) VALUES($1, $2)", hashtag, post_id)
+    if LogErr(db_err) {
+      respond(res, false, nil, "Error adding hashtag to database.")
+      return
+    }
   }
 
   respond(res, true, nil, nil)
@@ -299,9 +318,10 @@ func getPosts(res http.ResponseWriter, req *http.Request) {
     return
   }
 
+  point_str := pointString(fields["latitude"], fields["longitude"])
   query_string := "SELECT id, ST_X(ST_AsText(location)) as longitude, ST_Y(ST_AsText(location))" +
-    " as latitude, caption, owner, image_url FROM posts WHERE ST_DWithin(location, 'POINT(" + 
-    fields["longitude"] + " " + fields["latitude"] + ")', " + fields["radius"] + ");"
+    " as latitude, caption, owner, image_url, hashtags, created_at, ST_DISTANCE(location, " + point_str +") as distance " +
+    "FROM posts WHERE ST_DWithin(location, " + point_str + ", " + fields["radius"] + ");"
   rows, db_err := db.Query(query_string)
   if LogErr(db_err) {
     respond(res, false, nil, "Error retrieving rows from database.")
@@ -313,7 +333,7 @@ func getPosts(res http.ResponseWriter, req *http.Request) {
 }
 
 func myPosts(res http.ResponseWriter, req *http.Request) {
-  fields := extractFields("GET", res, req, "access_token")
+  fields := extractFields("GET", res, req, "access_token", "latitude", "longitude")
   if fields == nil {
     return
   }
@@ -323,8 +343,10 @@ func myPosts(res http.ResponseWriter, req *http.Request) {
   }
 
   username := users[fields["access_token"]]
+  point_str := pointString(fields["latitude"], fields["longitude"])
   rows, db_err := db.Query("SELECT id, ST_X(ST_AsText(location)) as longitude, " +
-    "ST_Y(ST_AsText(location)) as latitude, caption, owner, image_url FROM posts " +
+    "ST_Y(ST_AsText(location)) as latitude, caption, owner, image_url, hashtags, " +
+    "created_at, ST_DISTANCE(location, " + point_str + ") as distance FROM posts " +
     "WHERE owner=$1", username)
   if LogErr(db_err) {
     respond(res, false, nil, "Error retrieving rows from database.")
@@ -335,11 +357,46 @@ func myPosts(res http.ResponseWriter, req *http.Request) {
   respond(res, true, rowsToPosts(rows), nil)
 }
 
+func getPostsFromHashtag(res http.ResponseWriter, req *http.Request) {
+  fields := extractFields("GET", res, req, "access_token", "latitude", "longitude", "hashtag")
+  if fields == nil {
+    return
+  }
+
+  if !enforceValidAccessToken(res, fields["access_token"]) {
+    return
+  }
+
+  hashtag := strings.ToLower(fields["hashtag"])
+  point_str := pointString(fields["latitude"], fields["longitude"])
+  rows, db_err := db.Query("SELECT id, ST_X(ST_AsText(location)) as longitude, " +
+    "ST_Y(ST_AsText(location)) as latitude, caption, owner, image_url, hashtags, " +
+    "created_at, ST_DISTANCE(location, " + point_str + ") as distance FROM posts p " +
+    "INNER JOIN (SELECT * FROM Hashtags WHERE hashtag=$1) h ON h.post_id=p.id", hashtag)
+  if LogErr(db_err) {
+    respond(res, false, nil, "Error retrieving rows from database.")
+    return
+  }
+  defer rows.Close()
+
+  respond(res, true, rowsToPosts(rows), nil)
+}
+
+func getHashtagsByPopularity(res http.ResponseWriter, req *http.Request) {
+
+}
+
+func pointString(latitude string, longitude string) string {
+  return fmt.Sprintf("ST_GeographyFromText('SRID=4326;POINT(%s %s)')", longitude, latitude)
+}
+
 func rowsToPosts(rows *sql.Rows) []map[string]string {
   var posts []map[string]string
   for rows.Next() {
-    var id, longitude, latitude, caption, owner, image_url string
-    rows.Scan(&id, &longitude, &latitude, &caption, &owner, &image_url)
+    var id, longitude, latitude, caption, owner, image_url, hashtags string
+    var created_at time.Time
+    var distance float64
+    rows.Scan(&id, &longitude, &latitude, &caption, &owner, &image_url, &hashtags, &created_at, &distance)
 
     post := map[string]string{
       "id": id,
@@ -348,6 +405,9 @@ func rowsToPosts(rows *sql.Rows) []map[string]string {
       "caption": caption,
       "owner": owner,
       "image_url": image_url,
+      "hashtags": hashtags,
+      "created_at": created_at.String(),
+      "distance": fmt.Sprintf("%.2f", distance),
     }
 
     posts = append(posts, post)
@@ -443,5 +503,7 @@ func main() {
   http.HandleFunc("/add_post", addPost)
   http.HandleFunc("/get_posts", getPosts)
   http.HandleFunc("/my_posts", myPosts)
+  http.HandleFunc("/get_posts_with_hashtag", getPostsFromHashtag)
+  http.HandleFunc("/hashtags", getHashtagsByPopularity)
   log.Fatal(http.ListenAndServe(":" + PORT, nil))
 }
