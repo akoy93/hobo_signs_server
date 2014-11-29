@@ -14,9 +14,11 @@ When using any part of the API I wrote, you'll get a JSON object as a response. 
 	- distance: the distance in meters from the provide latitude/longitude
 	- hashtags: a pipe-separated list of hashtags associated with the post (e.g. "hashtag1|tag2|tag3")
 	- id: the unique post id (integer)
-	- image_url: a url pointing to the image associated with the post content
+	- media_url: a url pointing to the media associated with the post content
+	- media_type: the type of media associated with the post
 	- latitude: the latitude of the post location
 	- longitude: the longitude of the post location
+	- location_name: the reverse geocoded location of the post
 	- owner: the username of the person who made the post
 
 **Sample Post JSON Object:**
