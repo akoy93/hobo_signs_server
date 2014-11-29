@@ -49,6 +49,8 @@ var access_tokens map[string]string // username -> access_token
 var users map[string]string // access_token -> username
 var mutex *sync.Mutex
 
+type convert func(*sql.Rows) map[string]string
+
 func init() {
   DB_URL = os.Getenv("DB_URL")
   if DB_URL == "" {
@@ -329,7 +331,7 @@ func getPosts(res http.ResponseWriter, req *http.Request) {
   }
   defer rows.Close()
 
-  respond(res, true, rowsToPosts(rows), nil)
+  respond(res, true, rowsToPosts(rows, parsePost), nil)
 }
 
 func myPosts(res http.ResponseWriter, req *http.Request) {
@@ -354,7 +356,7 @@ func myPosts(res http.ResponseWriter, req *http.Request) {
   }
   defer rows.Close()
 
-  respond(res, true, rowsToPosts(rows), nil)
+  respond(res, true, rowsToPosts(rows, parsePost), nil)
 }
 
 func getPostsFromHashtag(res http.ResponseWriter, req *http.Request) {
@@ -379,20 +381,47 @@ func getPostsFromHashtag(res http.ResponseWriter, req *http.Request) {
   }
   defer rows.Close()
 
-  respond(res, true, rowsToPosts(rows), nil)
+  respond(res, true, rowsToPosts(rows, parsePost), nil)
 }
 
 func getHashtagsByPopularity(res http.ResponseWriter, req *http.Request) {
+  fields := extractFields("GET", res, req, "access_token")
+  if fields == nil {
+    return
+  }
 
+  if !enforceValidAccessToken(res, fields["access_token"]) {
+    return
+  }
+
+  rows, db_err := db.Query("SELECT hashtag, COUNT(*) as num_posts FROM Hashtags GROUP BY hashtag ORDER BY num_posts DESC")
+  if LogErr(db_err) {
+    respond(res, false, nil, "Error computing hashtag popularity. Unable to retreive rows.")
+    return
+  }
+  defer rows.Close()
+
+  respond(res, true, rowsToPosts(rows, func(rows *sql.Rows) map[string]string {
+      var hashtag, num_posts string
+      rows.Scan(&hashtag, &num_posts)
+      return map[string]string{"hashtag": hashtag, "num_posts": num_posts}
+    }), nil)
 }
 
 func pointString(latitude string, longitude string) string {
   return fmt.Sprintf("ST_GeographyFromText('SRID=4326;POINT(%s %s)')", longitude, latitude)
 }
 
-func rowsToPosts(rows *sql.Rows) []map[string]string {
+func rowsToPosts(rows *sql.Rows, parse convert) []map[string]string {
   var posts []map[string]string
   for rows.Next() {
+    posts = append(posts, parse(rows))
+  }
+
+  return posts
+}
+
+func parsePost(rows *sql.Rows) map[string]string {
     var id, longitude, latitude, caption, owner, image_url, hashtags string
     var created_at time.Time
     var distance float64
@@ -410,10 +439,7 @@ func rowsToPosts(rows *sql.Rows) []map[string]string {
       "distance": fmt.Sprintf("%.2f", distance),
     }
 
-    posts = append(posts, post)
-  }
-
-  return posts
+    return post 
 }
 
 func extractFields(method string, res http.ResponseWriter, req *http.Request, fields ...string) map[string]string {
