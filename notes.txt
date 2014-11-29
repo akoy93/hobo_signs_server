@@ -52,9 +52,11 @@ create table Users (
 create table Posts (
   id serial PRIMARY KEY,
   location geography(POINT,4326),
+  location_name text,
   caption char(256),
   owner char(20),
-  image_url char(128),
+  media_url char(128),
+  media_type char(5),
   hashtags text,
   created_at timestamptz
 );
@@ -62,7 +64,8 @@ create table Posts (
 -- Should create index on hashtag
 create table Hashtags (
   hashtag text,
-  post_id int
+  post_id int,
+  PRIMARY KEY(hashtag, post_id)  
 );
 CREATE INDEX hashtag_idx ON Hashtags(hashtag);
 
@@ -87,3 +90,7 @@ SELECT * FROM posts
   WHERE ST_DWithin(location, 'POINT(-110 30)', 140456.0);
 
 Use x-www-form-urlencoded
+
+Reverse Geocoding:
+http://api.geonames.org/findNearbyPostalCodesJSON?lat=40.73&lng=-73.99&username=akoy93 (name is city name, adminCode1 is state)
+http://api.geonames.org/findNearbyPlaceNameJSON?lat=40.730756&lng=-73.991344&username=akoy93 (toponymName is nearby populated place)
