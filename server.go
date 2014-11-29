@@ -19,6 +19,7 @@ import (
   "log"
   "net/http"
   "os"
+  "regexp"
   "strings"
   "sync"
   "time"
@@ -224,8 +225,6 @@ func addPost(res http.ResponseWriter, req *http.Request) {
   if fields == nil {
     return
   }
-  hashtags_raw := strings.ToLower(req.FormValue("hashtags"))
-  hashtags := strings.Split(hashtags_raw, "|")
 
   if !enforceValidAccessToken(res, fields["access_token"]) {
     return
@@ -261,12 +260,15 @@ func addPost(res http.ResponseWriter, req *http.Request) {
     return
   }
 
+  // Extract hashtags
+  hashtags := extractHashtags(fields["caption"])
+
   // Add to Posts table
   username := users[fields["access_token"]]
   point_str := pointString(fields["latitude"], fields["longitude"])
   query_string := "INSERT INTO Posts (location, caption, owner, image_url, hashtags, created_at) " +
     "VALUES (" + point_str + fmt.Sprintf(", '%s', '%s', '%s', '%s', CURRENT_TIMESTAMP) RETURNING id", 
-    fields["caption"], username, getS3Image(image_name), hashtags_raw)
+    fields["caption"], username, getS3Image(image_name), strings.Join(hashtags, "|"))
   rows, db_err := db.Query(query_string)
 
   if LogErr(db_err) {
@@ -288,6 +290,16 @@ func addPost(res http.ResponseWriter, req *http.Request) {
   }
 
   respond(res, true, nil, nil)
+}
+
+func extractHashtags(caption string) []string {
+  r, _ := regexp.Compile(`#([\w\d]+)`)
+  hashtagMatches := r.FindAllStringSubmatch(caption, -1)
+  hashtags := []string{}
+  for _, s := range hashtagMatches { 
+    hashtags = append(hashtags, strings.ToLower(s[1])) 
+  }
+  return hashtags
 }
 
 func processImage(res http.ResponseWriter, file io.Reader) []byte {
@@ -359,7 +371,7 @@ func myPosts(res http.ResponseWriter, req *http.Request) {
   respond(res, true, rowsToPosts(rows, parsePost), nil)
 }
 
-func getPostsFromHashtag(res http.ResponseWriter, req *http.Request) {
+func getPostsWithHashtag(res http.ResponseWriter, req *http.Request) {
   fields := extractFields("GET", res, req, "access_token", "latitude", "longitude", "hashtag")
   if fields == nil {
     return
@@ -529,7 +541,7 @@ func main() {
   http.HandleFunc("/add_post", addPost)
   http.HandleFunc("/get_posts", getPosts)
   http.HandleFunc("/my_posts", myPosts)
-  http.HandleFunc("/get_posts_with_hashtag", getPostsFromHashtag)
+  http.HandleFunc("/get_posts_with_hashtag", getPostsWithHashtag)
   http.HandleFunc("/hashtags", getHashtagsByPopularity)
   log.Fatal(http.ListenAndServe(":" + PORT, nil))
 }
