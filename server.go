@@ -234,6 +234,7 @@ func isLoggedIn(res http.ResponseWriter, req *http.Request) {
 // Requires multipart/form-data
 // Optional "hashtags" parameter in the form of #HASTAG1|#HASHTAG2|#HASHTAG3
 func addPost(res http.ResponseWriter, req *http.Request) {
+	logRequest(req);
 	fields := extractFields("POST", res, req, "latitude", "longitude", "access_token", "caption")
 	if fields == nil {
 		return
@@ -638,6 +639,13 @@ func getJSON(url string) (*jsonq.JsonQuery, error) {
 	}
 
 	return jsonq.NewQuery(r), nil
+}
+
+func logRequest(r *http.Request) {
+	log.Printf("%s %s %s", r.RemoteAddr, r.Method, r.URL)
+	log.Println(r.Header)
+	r.ParseMultipartForm(1000000)
+	log.Println(r.MultipartForm)
 }
 
 func main() {
