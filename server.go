@@ -57,6 +57,10 @@ var mutex *sync.Mutex
 
 type convert func(*sql.Rows) map[string]string
 
+// For development
+var mostRecentURL string
+var imageMutex *sync.Mutex
+
 func init() {
 	DB_URL = os.Getenv("DB_URL")
 	if DB_URL == "" {
@@ -81,6 +85,7 @@ func init() {
 	access_tokens = make(map[string]string)
 	users = make(map[string]string)
 	mutex = new(sync.Mutex)
+	imageMutex = new(sync.Mutex)
 
 	// Setup Amazon S3 connection
 	auth, err := aws.EnvAuth()
@@ -121,6 +126,10 @@ func hello(res http.ResponseWriter, req *http.Request) {
 
 func alive(res http.ResponseWriter, req *http.Request) {
 	respond(res, true, "The server is up and running!", nil)
+}
+
+func mostRecentImage(res http.ResponseWriter, req *http.Request) {
+	http.Redirect(res, req, mostRecentURL, 301)
 }
 
 // Requires a username and a password
@@ -234,7 +243,6 @@ func isLoggedIn(res http.ResponseWriter, req *http.Request) {
 // Requires multipart/form-data
 // Optional "hashtags" parameter in the form of #HASTAG1|#HASHTAG2|#HASHTAG3
 func addPost(res http.ResponseWriter, req *http.Request) {
-	logRequest(req);
 	fields := extractFields("POST", res, req, "latitude", "longitude", "access_token", "caption")
 	if fields == nil {
 		return
@@ -282,12 +290,15 @@ func addPost(res http.ResponseWriter, req *http.Request) {
 
 	// Add to Posts table
 	image_url := <-s3Chan
+
+	imageMutex.Lock()
+	mostRecentURL = image_url
+	imageMutex.Unlock()
+
 	if len(image_url) == 0 {
 		return
 	}
 	location_name := <-geocodeChan
-	fmt.Println(image_url)
-	fmt.Println(location_name)
 	username := users[fields["access_token"]]
 	point_str := pointString(fields["latitude"], fields["longitude"])
 	rows, db_err := db.Query(
@@ -641,19 +652,16 @@ func getJSON(url string) (*jsonq.JsonQuery, error) {
 	return jsonq.NewQuery(r), nil
 }
 
-func logRequest(r *http.Request) {
-	log.Printf("%s %s %s", r.RemoteAddr, r.Method, r.URL)
-	log.Println(r.Header)
-	r.ParseMultipartForm(1000000)
-	log.Println(r.MultipartForm)
-}
-
 func main() {
 	db = setupDB()
 	defer db.Close()
 
 	log.Println("Starting server on port", PORT)
 
+	// Development
+	http.HandleFunc("/most_recent_image", mostRecentImage);
+
+	// Production
 	http.HandleFunc("/", hello)
 	http.HandleFunc("/ping", alive)
 	http.HandleFunc("/create_account", createAccount)

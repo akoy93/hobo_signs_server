@@ -94,3 +94,9 @@ Use x-www-form-urlencoded
 Reverse Geocoding:
 http://api.geonames.org/findNearbyPostalCodesJSON?lat=40.73&lng=-73.99&username=akoy93 (name is city name, adminCode1 is state)
 http://api.geonames.org/findNearbyPlaceNameJSON?lat=40.730756&lng=-73.991344&username=akoy93 (toponymName is nearby populated place)
+
+add_post logs:
+
+[::1]:64956 POST /add_post
+map[Content-Length:[96085] Origin:[null] Content-Type:[multipart/form-data; boundary=----WebKitFormBoundarycbTDr0PA8BdygGA1] Connection:[keep-alive] User-Agent:[Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.71 Safari/537.36] Accept-Encoding:[gzip, deflate] Accept-Language:[en-US,en;q=0.8] Cache-Control:[max-age=0] Accept:[text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8]] 
+2014/11/30 22:50:51 &{map[caption:[#testing] submit:[Submit] access_token:[KWic9C310nF0SZeOZ4VomCWU3HZPIha5] latitude:[40] longitude:[-76]] map[image:[0xc20803c700]]}
