@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/dchest/uniuri"
+	"github.com/disintegration/imaging"
 	"github.com/jmoiron/jsonq"
 	_ "github.com/lib/pq"
 	"github.com/mitchellh/goamz/aws"
 	"github.com/mitchellh/goamz/s3"
-	"github.com/disintegration/imaging"
 	"golang.org/x/crypto/bcrypt"
 	"image"
 	"image/jpeg"
@@ -33,11 +33,12 @@ const (
 	PASSWORD_MAX_LENGTH int    = 20
 	ACCESS_TOKEN_LENGTH int    = 32
 	CAPTION_MAX_LENGTH  int    = 256
-	IMAGE_NAME_LENGTH   int    = 32
-	MAX_IMAGE_HEIGHT    int   = 1920
-	MAX_IMAGE_WIDTH     int   = 1080
+	MEDIA_NAME_LENGTH   int    = 32
+	MAX_IMAGE_HEIGHT    int    = 1920
+	MAX_IMAGE_WIDTH     int    = 1080
 	IMAGE_EXTENSION     string = "jpg"
 	IMAGE_CONTENT_TYPE  string = "image/jpeg"
+	VIDEO_CONTENT_TYPE  string = "video/mp4"
 	NUM_GEOCODE_RETRIES int    = 3
 	CITY_API_URL        string = "http://api.geonames.org/findNearbyPostalCodesJSON?lat=%s&lng=%s&username=%s"
 	PLACE_API_URL       string = "http://api.geonames.org/findNearbyPlaceNameJSON?lat=%s&lng=%s&username=%s"
@@ -45,7 +46,7 @@ const (
 
 // DB Schema:
 // - Users: | username | password_hash |
-// - Posts: | id | location | caption | owner | image_url | hashtags | created_at |
+// - Posts: | id | location | caption | owner | media_url | hashtags | created_at |
 // - Hashtags: | hashtag | post_id |
 var bucket *s3.Bucket
 var db *sql.DB
@@ -103,9 +104,9 @@ func setupDB() *sql.DB {
 	return db
 }
 
-func addToS3(res http.ResponseWriter, name string, data []byte, c chan string) {
+func addToS3(res http.ResponseWriter, name string, media_type string, data []byte, c chan string) {
 	defer close(c)
-	err := bucket.Put(name, data, IMAGE_CONTENT_TYPE, s3.BucketOwnerFull)
+	err := bucket.Put(name, data, media_type, s3.BucketOwnerFull)
 	if LogErr(err) {
 		respond(res, false, nil, "Unable to store image.")
 		c <- ""
@@ -266,21 +267,26 @@ func addPost(res http.ResponseWriter, req *http.Request) {
 	}
 	defer file.Close()
 
-	if header.Header["Content-Type"][0] != IMAGE_CONTENT_TYPE {
+	header_str := header.Header["Content-Type"][0]
+
+	var media_type string
+	if header_str != IMAGE_CONTENT_TYPE && header_str != VIDEO_CONTENT_TYPE {
 		log.Println(header.Header)
-		respond(res, false, nil, fmt.Sprintf("Content-Type must be %s.", IMAGE_CONTENT_TYPE))
+		respond(res, false, nil, fmt.Sprintf("Content-Type must be %s or %s.", IMAGE_CONTENT_TYPE, VIDEO_CONTENT_TYPE))
 		return
+	} else {
+		media_type = header_str
 	}
 
-	bytes := processImage(res, file)
+	bytes := processMedia(res, file, media_type)
 	if bytes == nil {
 		return
 	}
 
 	// Add image to S3
-	image_name := uniuri.NewLen(IMAGE_NAME_LENGTH)
+	media_name := uniuri.NewLen(MEDIA_NAME_LENGTH)
 	s3Chan := make(chan string)
-	go addToS3(res, image_name, bytes, s3Chan)
+	go addToS3(res, media_name, media_type, bytes, s3Chan)
 
 	// Reverse geocode latitude and longitude
 	geocodeChan := make(chan string)
@@ -290,13 +296,13 @@ func addPost(res http.ResponseWriter, req *http.Request) {
 	hashtags := extractHashtags(fields["caption"])
 
 	// Add to Posts table
-	image_url := <-s3Chan
+	media_url := <-s3Chan
 
 	imageMutex.Lock()
-	mostRecentURL = image_url
+	mostRecentURL = media_url
 	imageMutex.Unlock()
 
-	if len(image_url) == 0 {
+	if len(media_url) == 0 {
 		return
 	}
 	location_name := <-geocodeChan
@@ -305,7 +311,7 @@ func addPost(res http.ResponseWriter, req *http.Request) {
 	rows, db_err := db.Query(
 		`INSERT INTO Posts (location, location_name, caption, owner, media_url, media_type, hashtags, created_at)
       VALUES (`+point_str+`, $1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP) RETURNING id`,
-		location_name, fields["caption"], username, image_url, "image", strings.Join(hashtags, "|"))
+		location_name, fields["caption"], username, media_url, media_type, strings.Join(hashtags, "|"))
 
 	if LogErr(db_err) {
 		respond(res, false, nil, "Error adding post to database.")
@@ -343,13 +349,18 @@ func extractHashtags(caption string) []string {
 	return hashtags
 }
 
-func processImage(res http.ResponseWriter, file io.Reader) []byte {
+func processMedia(res http.ResponseWriter, file io.Reader, media_type string) []byte {
 	// copy file reader
-	buf, _ := ioutil.ReadAll(file) 
-  file = bytes.NewBuffer(buf) 
-  file_copy := bytes.NewBuffer(buf) 
+	buf, _ := ioutil.ReadAll(file)
 
-  // get image size
+	if media_type == VIDEO_CONTENT_TYPE {
+		return buf
+	}
+
+	file = bytes.NewBuffer(buf)
+	file_copy := bytes.NewBuffer(buf)
+
+	// get image size
 	img_config, _, config_err := image.DecodeConfig(file_copy)
 	if LogErr(config_err) {
 		respond(res, false, nil, "Unable to get image size.")
@@ -679,7 +690,7 @@ func main() {
 	log.Println("Starting server on port", PORT)
 
 	// Development
-	http.HandleFunc("/most_recent_image", mostRecentImage);
+	http.HandleFunc("/most_recent_image", mostRecentImage)
 
 	// Production
 	http.HandleFunc("/", hello)

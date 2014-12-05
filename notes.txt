@@ -56,7 +56,7 @@ create table Posts (
   caption char(256),
   owner char(20),
   media_url char(128),
-  media_type char(5),
+  media_type char(16),
   hashtags text,
   created_at timestamptz
 );
