@@ -13,8 +13,9 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/mitchellh/goamz/aws"
 	"github.com/mitchellh/goamz/s3"
-	"github.com/nfnt/resize"
+	"github.com/disintegration/imaging"
 	"golang.org/x/crypto/bcrypt"
+	"image"
 	"image/jpeg"
 	"io"
 	"io/ioutil"
@@ -33,8 +34,8 @@ const (
 	ACCESS_TOKEN_LENGTH int    = 32
 	CAPTION_MAX_LENGTH  int    = 256
 	IMAGE_NAME_LENGTH   int    = 32
-	MAX_IMAGE_HEIGHT    uint   = 1080
-	MAX_IMAGE_WIDTH     uint   = 1080
+	MAX_IMAGE_HEIGHT    int   = 1920
+	MAX_IMAGE_WIDTH     int   = 1080
 	IMAGE_EXTENSION     string = "jpg"
 	IMAGE_CONTENT_TYPE  string = "image/jpeg"
 	NUM_GEOCODE_RETRIES int    = 3
@@ -343,22 +344,41 @@ func extractHashtags(caption string) []string {
 }
 
 func processImage(res http.ResponseWriter, file io.Reader) []byte {
+	// copy file reader
+	buf, _ := ioutil.ReadAll(file) 
+  file = bytes.NewBuffer(buf) 
+  file_copy := bytes.NewBuffer(buf) 
+
+  // get image size
+	img_config, _, config_err := image.DecodeConfig(file_copy)
+	if LogErr(config_err) {
+		respond(res, false, nil, "Unable to get image size.")
+		return nil
+	}
+
+	// decode jpeg image
 	img, decode_err := jpeg.Decode(file)
 	if LogErr(decode_err) {
 		respond(res, false, nil, "Unable to decode image.")
 		return nil
 	}
 
-	resized := resize.Thumbnail(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT, img, resize.NearestNeighbor)
+	// rotate image and resize if necessary
+	if img_config.Width > img_config.Height {
+		img = imaging.Rotate270(img)
+	}
+	if img_config.Width > MAX_IMAGE_WIDTH || img_config.Height > MAX_IMAGE_HEIGHT {
+		img = imaging.Fit(img, MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT, imaging.Lanczos)
+	}
 
-	buf := new(bytes.Buffer)
-	encode_err := jpeg.Encode(buf, resized, nil)
+	img_buf := new(bytes.Buffer)
+	encode_err := jpeg.Encode(img_buf, img, nil)
 	if LogErr(encode_err) {
 		respond(res, false, nil, "Unable to encode image.")
 		return nil
 	}
 
-	return buf.Bytes()
+	return img_buf.Bytes()
 }
 
 // requires radius to be in meters
