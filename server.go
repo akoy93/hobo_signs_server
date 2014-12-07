@@ -408,7 +408,8 @@ func getPosts(res http.ResponseWriter, req *http.Request) {
 		`SELECT id, ST_X(ST_AsText(location)) as longitude, ST_Y(ST_AsText(location)) as latitude, 
       location_name, caption, owner, media_url, media_type, hashtags, created_at, 
       ST_DISTANCE(location, `+point_str+`) as distance 
-      FROM posts WHERE ST_DWithin(location, `+point_str+`, $1)`, fields["radius"])
+      FROM posts WHERE ST_DWithin(location, `+point_str+`, $1)
+      ORDER BY distance ASC`, fields["radius"])
 	if LogErr(db_err) {
 		respond(res, false, nil, "Error retrieving rows from database.")
 		return
@@ -434,7 +435,8 @@ func myPosts(res http.ResponseWriter, req *http.Request) {
 		`SELECT id, ST_X(ST_AsText(location)) as longitude, ST_Y(ST_AsText(location)) as latitude, 
       location_name, caption, owner, media_url, media_type, hashtags, created_at, 
       ST_DISTANCE(location, `+point_str+`) as distance 
-      FROM posts WHERE owner=$1`, username)
+      FROM posts WHERE owner=$1
+      ORDER BY created_at DESC`, username)
 	if LogErr(db_err) {
 		respond(res, false, nil, "Error retrieving rows from database.")
 		return
@@ -445,7 +447,7 @@ func myPosts(res http.ResponseWriter, req *http.Request) {
 }
 
 func getPostsWithHashtag(res http.ResponseWriter, req *http.Request) {
-	fields := extractFields("GET", res, req, "access_token", "latitude", "longitude", "hashtag")
+	fields := extractFields("GET", res, req, "access_token", "latitude", "longitude", "hashtag", "radius")
 	if fields == nil {
 		return
 	}
@@ -461,7 +463,8 @@ func getPostsWithHashtag(res http.ResponseWriter, req *http.Request) {
       location_name, caption, owner, media_url, media_type, hashtags, created_at, 
       ST_DISTANCE(location, `+point_str+`) as distance 
       FROM posts p INNER JOIN (SELECT * FROM Hashtags WHERE hashtag=$1) h 
-      ON h.post_id=p.id`, hashtag)
+      ON h.post_id=p.id
+      WHERE ST_DWithin(location, `+point_str+`, $2)`, hashtag, fields["radius"])
 	if LogErr(db_err) {
 		respond(res, false, nil, "Error retrieving rows from database.")
 		return
@@ -472,7 +475,7 @@ func getPostsWithHashtag(res http.ResponseWriter, req *http.Request) {
 }
 
 func getHashtagsByPopularity(res http.ResponseWriter, req *http.Request) {
-	fields := extractFields("GET", res, req, "access_token")
+	fields := extractFields("GET", res, req, "access_token", "latitude", "longitude", "radius")
 	if fields == nil {
 		return
 	}
@@ -481,7 +484,14 @@ func getHashtagsByPopularity(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	rows, db_err := db.Query("SELECT hashtag, COUNT(*) as num_posts FROM Hashtags GROUP BY hashtag ORDER BY num_posts DESC")
+	point_str := pointString(fields["latitude"], fields["longitude"])
+	rows, db_err := db.Query(
+		`SELECT hashtag, COUNT(*) as num_posts 
+			FROM (SELECT hashtag, location
+							FROM posts p INNER JOIN Hashtags h 
+							ON h.post_id=p.id WHERE ST_DWithin(location, `+point_str+`, $1)) j
+			GROUP BY hashtag 
+			ORDER BY num_posts DESC`, fields["radius"])
 	if LogErr(db_err) {
 		respond(res, false, nil, "Error computing hashtag popularity. Unable to retreive rows.")
 		return
