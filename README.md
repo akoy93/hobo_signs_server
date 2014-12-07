@@ -75,7 +75,7 @@ When using any part of the API I wrote, you'll get a JSON object as a response. 
 - **Response Data:** None
 
 **Getting Posts via Range Query:**
-- This API call returns all posts within the specified radius of the specified location.
+- This API call returns all posts within the specified radius of the specified location. This list will be sorted by nearest post to furthest post.
 - HTTP GET to /get_posts
 - Requires the following query parameters:
 	- access_token
@@ -85,7 +85,7 @@ When using any part of the API I wrote, you'll get a JSON object as a response. 
 - **Response Data:** a JSON object containing a list of posts
 
 **Getting the Current User's Posts:**
-- This API call returns all posts made by the current user.
+- This API call returns all posts made by the current user. This list will be sorted by time created in descending order.
 - HTTP GET to /my_posts
 - Requires the following query parameters:
 	- access_token
@@ -94,20 +94,24 @@ When using any part of the API I wrote, you'll get a JSON object as a response. 
 - **Response Data:** a JSON object containing a list of posts
 
 **Getting Posts By Hashtag:**
-- This API call returns all posts containing the specified hashtag.
+- This API call returns all posts within the specified radius of the provided location that contain the specified hashtag.
 - HTTP GET to /get_posts_with_hashtag
 - Requires the following query parameters:
 	- access_token
 	- latitude
 	- longitude
 	- hashtag (without the '#', e.g. "android")
+	- radius
 - **Response Data:** a JSON object containing a list of posts
 
 **Getting a List of Hashtags:**
-- This API call returns a list of hashtags sorted by their number of posts in descending order. The response will be a list of JSON objects containing a 'hashtag' field and a 'num_posts' field. The 'num_posts' field is an integer equal to the number of posts that contain the particular hashtag.
+- This API call returns a list of all hashtags that have been used within the specified radius of the provided location. This list will be sorted by their number of posts in descending order. The response will be a list of JSON objects containing a 'hashtag' field and a 'num_posts' field. The 'num_posts' field is an integer equal to the number of posts that contain the particular hashtag.
 - HTTP GET to /hashtags
 - Requires the following query parameters:
 	- access_token
+	- latitude
+	- longitude
+	- radius
 - **Response Data:** a JSON object containing a list of hashtags
 
 
