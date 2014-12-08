@@ -84,6 +84,8 @@ INSERT INTO Posts (location, caption, owner, image_url, hashtags, created_at) VA
 INSERT INTO Posts (location, caption, owner) VALUES (ST_GeographyFromText('SRID=4326;POINT(-109 29)'), 'Test caption', 'Test user' );
 INSERT INTO Posts (location, caption, owner) VALUES (ST_GeographyFromText('SRID=4326;POINT(0 49)'), 'Test caption', 'Test user' );
 
+// get user's vote
+SELECT COALESCE((SELECT vote FROM Votes v WHERE v.post_id=id and v.username=owner), 0) as vote FROM Posts;
 
 // find all rows within a certain radius:
 SELECT * FROM posts

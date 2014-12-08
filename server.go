@@ -560,7 +560,7 @@ func pointString(latitude string, longitude string) string {
 }
 
 func rowsToPosts(rows *sql.Rows, parse convert) []map[string]string {
-	var posts []map[string]string
+	posts := []map[string]string{}
 	for rows.Next() {
 		posts = append(posts, parse(rows))
 	}
