@@ -441,7 +441,7 @@ func myPosts(res http.ResponseWriter, req *http.Request) {
       COALESCE((SELECT vote FROM Votes v WHERE v.post_id=id and v.username=$1), 0) as my_vote,
       COALESCE((SELECT SUM(vote) FROM Votes v where v.post_id=id), 0) as total_vote 
       FROM posts WHERE owner=$1
-      ORDER BY created_at DESC`, username)
+      ORDER BY distance ASC`, username)
 	if LogErr(db_err) {
 		respond(res, false, nil, "Error retrieving rows from database.")
 		return
