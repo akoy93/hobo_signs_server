@@ -403,13 +403,16 @@ func getPosts(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	username := users[fields["access_token"]]
 	point_str := pointString(fields["latitude"], fields["longitude"])
 	rows, db_err := db.Query(
 		`SELECT id, ST_X(ST_AsText(location)) as longitude, ST_Y(ST_AsText(location)) as latitude, 
       location_name, caption, owner, media_url, media_type, hashtags, created_at, 
-      ST_DISTANCE(location, `+point_str+`) as distance 
-      FROM posts WHERE ST_DWithin(location, `+point_str+`, $1)
-      ORDER BY distance ASC`, fields["radius"])
+      ST_DISTANCE(location, `+point_str+`) as distance,
+      COALESCE((SELECT vote FROM Votes v WHERE v.post_id=id and v.username=$1), 0) as my_vote,
+      COALESCE((SELECT SUM(vote) FROM Votes v where v.post_id=id), 0) as total_vote
+      FROM posts WHERE ST_DWithin(location, `+point_str+`, $2)
+      ORDER BY distance ASC`, username, fields["radius"])
 	if LogErr(db_err) {
 		respond(res, false, nil, "Error retrieving rows from database.")
 		return
@@ -434,7 +437,9 @@ func myPosts(res http.ResponseWriter, req *http.Request) {
 	rows, db_err := db.Query(
 		`SELECT id, ST_X(ST_AsText(location)) as longitude, ST_Y(ST_AsText(location)) as latitude, 
       location_name, caption, owner, media_url, media_type, hashtags, created_at, 
-      ST_DISTANCE(location, `+point_str+`) as distance 
+      ST_DISTANCE(location, `+point_str+`) as distance,
+      COALESCE((SELECT vote FROM Votes v WHERE v.post_id=id and v.username=$1), 0) as my_vote,
+      COALESCE((SELECT SUM(vote) FROM Votes v where v.post_id=id), 0) as total_vote 
       FROM posts WHERE owner=$1
       ORDER BY created_at DESC`, username)
 	if LogErr(db_err) {
@@ -456,15 +461,18 @@ func getPostsWithHashtag(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	username := users[fields["access_token"]]
 	hashtag := strings.ToLower(fields["hashtag"])
 	point_str := pointString(fields["latitude"], fields["longitude"])
 	rows, db_err := db.Query(
 		`SELECT id, ST_X(ST_AsText(location)) as longitude, ST_Y(ST_AsText(location)) as latitude, 
       location_name, caption, owner, media_url, media_type, hashtags, created_at, 
-      ST_DISTANCE(location, `+point_str+`) as distance 
-      FROM posts p INNER JOIN (SELECT * FROM Hashtags WHERE hashtag=$1) h 
+      ST_DISTANCE(location, `+point_str+`) as distance,
+      COALESCE((SELECT vote FROM Votes v WHERE v.post_id=id and v.username=$1), 0) as my_vote,
+      COALESCE((SELECT SUM(vote) FROM Votes v where v.post_id=id), 0) as total_vote  
+      FROM posts p INNER JOIN (SELECT * FROM Hashtags WHERE hashtag=$2) h 
       ON h.post_id=p.id
-      WHERE ST_DWithin(location, `+point_str+`, $2)`, hashtag, fields["radius"])
+      WHERE ST_DWithin(location, `+point_str+`, $3)`, username, hashtag, fields["radius"])
 	if LogErr(db_err) {
 		respond(res, false, nil, "Error retrieving rows from database.")
 		return
@@ -505,6 +513,48 @@ func getHashtagsByPopularity(res http.ResponseWriter, req *http.Request) {
 	}), nil)
 }
 
+func upvote(res http.ResponseWriter, req *http.Request) {
+	voteHelper(res, req, 1)
+}
+
+func downvote(res http.ResponseWriter, req *http.Request) {
+	voteHelper(res, req, -1)
+}
+
+func voteHelper(res http.ResponseWriter, req *http.Request, vote_value int) {
+	fields := extractFields("POST", res, req, "access_token", "post_id")
+	if fields == nil {
+		return
+	}
+
+	if !enforceValidAccessToken(res, fields["access_token"]) {
+		return
+	}
+
+	username := users[fields["access_token"]]
+
+	// attempt to update vote
+	update_result, update_err := db.Exec(
+		`UPDATE Votes SET vote=$1 WHERE post_id=$2 AND username=$3`,
+		vote_value, fields["post_id"], username)
+
+	// if vote does not exist, insert new vote
+	if update_rows, update_rows_err := update_result.RowsAffected(); update_rows == 0 || LogErr(update_rows_err) || LogErr(update_err) {
+		insert_result, insert_err := db.Exec(
+			`INSERT INTO Votes (post_id, username, vote) SELECT $1, $2, $3
+					WHERE NOT EXISTS (SELECT 1 FROM Votes WHERE post_id=$1 AND username=$2)
+					AND EXISTS (SELECT 1 From Posts WHERE id=$1)`,
+			fields["post_id"], username, vote_value)
+
+		if insert_rows, insert_rows_err := insert_result.RowsAffected(); insert_rows == 0 || LogErr(insert_rows_err) || LogErr(insert_err) {
+			respond(res, false, nil, "Error adding vote to database.")
+			return
+		}
+	}
+
+	respond(res, true, nil, nil)
+}
+
 func pointString(latitude string, longitude string) string {
 	return fmt.Sprintf("ST_GeographyFromText('SRID=4326;POINT(%s %s)')", longitude, latitude)
 }
@@ -519,11 +569,11 @@ func rowsToPosts(rows *sql.Rows, parse convert) []map[string]string {
 }
 
 func parsePost(rows *sql.Rows) map[string]string {
-	var id, longitude, latitude, location_name, caption, owner, media_url, media_type, hashtags string
+	var id, longitude, latitude, location_name, caption, owner, media_url, media_type, hashtags, my_vote, vote_count string
 	var created_at time.Time
 	var distance float64
 	rows.Scan(&id, &longitude, &latitude, &location_name, &caption, &owner,
-		&media_url, &media_type, &hashtags, &created_at, &distance)
+		&media_url, &media_type, &hashtags, &created_at, &distance, &my_vote, &vote_count)
 
 	post := map[string]string{
 		"id":            id,
@@ -537,6 +587,8 @@ func parsePost(rows *sql.Rows) map[string]string {
 		"hashtags":      hashtags,
 		"created_at":    created_at.String(),
 		"distance":      fmt.Sprintf("%.2f", distance),
+		"my_vote":       my_vote,
+		"vote_count":    vote_count,
 	}
 
 	return post
@@ -714,5 +766,7 @@ func main() {
 	http.HandleFunc("/my_posts", myPosts)
 	http.HandleFunc("/get_posts_with_hashtag", getPostsWithHashtag)
 	http.HandleFunc("/hashtags", getHashtagsByPopularity)
+	http.HandleFunc("/upvote", upvote)
+	http.HandleFunc("/downvote", downvote)
 	log.Fatal(http.ListenAndServe(":"+PORT, nil))
 }

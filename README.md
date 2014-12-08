@@ -19,7 +19,9 @@ When using any part of the API I wrote, you'll get a JSON object as a response. 
 	- latitude: the latitude of the post location
 	- longitude: the longitude of the post location
 	- location_name: the reverse geocoded location of the post
+	- my_vote: the value of the current user's vote on the post (1 for upvote, -1 for downvote, 0 for no vote)
 	- owner: the username of the person who made the post
+	- vote_count: the sum of all votes for the post
 
 **Sample Post JSON Object:**
 
@@ -114,5 +116,20 @@ When using any part of the API I wrote, you'll get a JSON object as a response. 
 	- radius
 - **Response Data:** a JSON object containing a list of hashtags
 
+**Upvoting a Post:**
+- This API call lets a user record an upvote for a post.
+- HTTP POST to /upvote
+- Requires the following query parameters:
+	- access_token
+	- post_id (see the "id" field in the sample Post JSON object)
+- **Response Data:** None
+
+**Downvoting a Post:**
+- This API call lets a user record an downvote for a post.
+- HTTP POST to /downvote
+- Requires the following query parameters:
+	- access_token
+	- post_id (see the "id" field in the sample Post JSON object)
+- **Response Data:** None
 
 ***IMPORTANT: for all HTTP Post requests, I have only ensured the functionality works with x-www-form-urlencoded form types***
