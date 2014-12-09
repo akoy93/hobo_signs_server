@@ -40,7 +40,7 @@ When using any part of the API I wrote, you'll get a JSON object as a response. 
 	- username (20 character limit)
 	- password (20 character limit)
 	- password_confirm (this is the same value as the password field, it is used to make the user enter their password twice, so they know what their password is)
-- **Response Data:** None
+- **Response Data:** the user's access_token in string form
 
 **Logging In:**
 - This API call logs a user into the application. It will validate the username and password fields and create a new session on the server.
